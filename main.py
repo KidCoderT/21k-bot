@@ -1,14 +1,15 @@
 import os
 import sys
-import subprocess
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from datetime import datetime
+import dotenv
+import discord
 import schedule
 import time
 
-username = "..."
-password = "..."
+dotenv.load_dotenv()
+token = str(os.getenv("TOKEN"))
 
 options = webdriver.ChromeOptions()
 options.add_argument(
@@ -26,7 +27,7 @@ options.add_argument("--start-maximized")
 options.add_argument("--disable-gpu")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--no-sandbox")
-# options.add_argument("--headless")
+options.add_argument("--headless")
 
 
 class StudentPortalInstance:
@@ -44,10 +45,10 @@ class StudentPortalInstance:
 
         # Log in To Website
         username_textbox = self.driver.find_element(By.NAME, "t_username")
-        username_textbox.send_keys(username)
+        username_textbox.send_keys(self.username)
 
         password_textbox = self.driver.find_element(By.NAME, "t_password")
-        password_textbox.send_keys(password)
+        password_textbox.send_keys(self.password)
 
         login_button = self.driver.find_element(
             By.CSS_SELECTOR, "div.Button.main_button._clickable.css-uz7xs5"
@@ -92,9 +93,54 @@ class StudentPortalInstance:
         # fmt: on
 
 
-tejas = StudentPortalInstance(username, password)
-print(tejas.stats)
-print(tejas.mail)
+# tejas = StudentPortalInstance(username, password)
+# print(tejas.stats)
+# print(tejas.mail)
 
-while True:
-    pass
+bot = discord.Bot()
+CTX = discord.context.ApplicationContext
+people: dict[int, StudentPortalInstance] = {}
+
+
+@bot.event
+async def on_ready():
+    print(f"{bot.user} is ready and online!")
+
+
+@bot.command(description="Login & Open the Portal")
+async def login(ctx: CTX, username: str, password: str):
+    if ctx.author.id in people:
+        return await ctx.respond("You have already been logged in 😑!")
+
+    await ctx.defer()
+
+    student = StudentPortalInstance(username, password)
+    people[ctx.author.id] = student
+
+    await ctx.respond("Logged in Successfully ✅")
+
+
+@bot.command(description="Logout of the Portal")
+async def logout(ctx: CTX, password: str):
+    if ctx.author.id not in people:
+        return await ctx.respond("You haven't even logged in 😑!")
+
+    if people[ctx.author.id].password != password:
+        return await ctx.respond("Password mismatch")
+
+    await ctx.defer()
+
+    people[ctx.author.id].driver.close()
+    del people[ctx.author.id]
+
+    await ctx.respond("Logged out Successfully ✅")
+
+
+@bot.command(description="Sends the bot's latency.")
+async def ping(
+    ctx: CTX,
+):
+    await ctx.respond(f"Namaste! Latency is {bot.latency}")
+
+
+bot.run(token)
