@@ -1,145 +1,125 @@
 import os
-import sys
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from datetime import datetime
-import dotenv
-import discord
+import logging
 import schedule
 import time
+
+import dotenv
+import discord
+from discord.ext import pages
+
+import src
 
 dotenv.load_dotenv()
 token = str(os.getenv("TOKEN"))
 
-options = webdriver.ChromeOptions()
-options.add_argument(
-    f"user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 12_1)"
-    " AppleWebKit/537.36 (KHTML, like Gecko)"
-    " Chrome/96.0.4664.110 Safari/537.36"
-)
-options.add_argument("--window-size=1920,1080")
-options.add_argument("--ignore-certificate-errors")
-options.add_argument("--allow-running-insecure-content")
-options.add_argument("--disable-extensions")
-options.add_argument("--proxy-server='direct://'")
-options.add_argument("--proxy-bypass-list=*")
-options.add_argument("--start-maximized")
-options.add_argument("--disable-gpu")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--no-sandbox")
-options.add_argument("--headless")
-
-
-class StudentPortalInstance:
-    MSG_DATE_FORMAT = "%d/%m/%Y %H:%M"
-
-    def __init__(self, username, password) -> None:
-        self.username = username
-        self.password = password
-
-        self.driver = webdriver.Chrome(options=options)
-        self.__initialize_portal()
-
-    def __initialize_portal(self):
-        self.driver.get("https://www.21kschool.in/#portal")
-
-        # Log in To Website
-        username_textbox = self.driver.find_element(By.NAME, "t_username")
-        username_textbox.send_keys(self.username)
-
-        password_textbox = self.driver.find_element(By.NAME, "t_password")
-        password_textbox.send_keys(self.password)
-
-        login_button = self.driver.find_element(
-            By.CSS_SELECTOR, "div.Button.main_button._clickable.css-uz7xs5"
-        )
-        login_button.click()
-
-        self.driver.implicitly_wait(3)
-
-    @property
-    def stats(self) -> tuple[tuple[int, int], float, tuple[int, int]]:
-        # fmt: off
-        div_text = self.driver.find_element(By.CSS_SELECTOR, "a.chart_completed > div > div._top-progress > div").text
-        assignment_success = tuple([int(num) for num in div_text.split() if num.isdigit()])
-        
-        assignment_avg_score = float(
-            self.driver.find_element(
-                By.CSS_SELECTOR,
-                "a.chart_avg_score > div > div._top-progress > div > span",
-            ).text
-        )
-
-        div_text = self.driver.find_element(By.CSS_SELECTOR, "a.chart_attendance > div > div._top-progress > div").text
-        attendance = tuple([int(num) for num in div_text.split() if num.isdigit()])
-
-        return assignment_success, assignment_avg_score, attendance
-        # fmt: on
-
-    @property
-    def mail(self):
-        # fmt: off
-        def extract_mail(message_div):
-            date_text = message_div.find_element(By.CSS_SELECTOR, "div._meta > span._date").text
-            date = datetime.strptime(date_text, self.MSG_DATE_FORMAT)
-            subject = message_div.find_element(By.CSS_SELECTOR, "div._subject").text
-            body = message_div.find_element(By.CSS_SELECTOR, "div._body").text
-
-            return {"data": date, "subject": subject, "body": body}
-
-        self.driver.implicitly_wait(3)
-        messages = self.driver.find_elements(By.CSS_SELECTOR, "div._list > div")
-        return [extract_mail(message) for message in messages[::2]]
-        # fmt: on
-
-
-# tejas = StudentPortalInstance(username, password)
-# print(tejas.stats)
-# print(tejas.mail)
+logging.basicConfig(level=logging.INFO)
 
 bot = discord.Bot()
 CTX = discord.context.ApplicationContext
-people: dict[int, StudentPortalInstance] = {}
 
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user} is ready and online!")
+    logging.info(f"{bot.user} is ready and online!")
 
 
 @bot.command(description="Login & Open the Portal")
-async def login(ctx: CTX, username: str, password: str):
-    if ctx.author.id in people:
-        return await ctx.respond("You have already been logged in 😑!")
-
-    await ctx.defer()
-
-    student = StudentPortalInstance(username, password)
-    people[ctx.author.id] = student
-
-    await ctx.respond("Logged in Successfully ✅")
+async def login(ctx: CTX):
+    logging.info(f"{ctx.author} initiated the login command.")
+    await ctx.send_modal(src.LoginModel())
 
 
 @bot.command(description="Logout of the Portal")
-async def logout(ctx: CTX, password: str):
-    if ctx.author.id not in people:
-        return await ctx.respond("You haven't even logged in 😑!")
+async def logout(ctx: CTX):
+    logging.info(f"{ctx.author} initiated the logout command.")
+    peep = src.Peeps.fetch(ctx.author.id)
 
-    if people[ctx.author.id].password != password:
-        return await ctx.respond("Password mismatch")
+    if peep is None:
+        return await ctx.respond("You haven't even logged in 😑")
+
+    await ctx.defer()
+    src.Peeps.delete(ctx.author.id)
+    await ctx.respond("Logged out Successfully ✅")
+
+
+@bot.command(description="Current Stats")
+async def stats(ctx: CTX):
+    logging.info(f"{ctx.author} initiated the stats command.")
+    peep = src.Peeps.fetch(ctx.author.id)
+
+    if peep is None:
+        return await ctx.respond("You haven't even logged in 😑")
+
+    assignment_success, assignment_avg_score, attendance = peep.stats
+
+    with src.stats_img(
+        assignment_success, assignment_avg_score / 100, attendance
+    ) as stats_img:
+        await ctx.respond(file=discord.File(stats_img))
+        # await ctx.respond(
+        #     f"Assignment Success: {assignment_success[0]/assignment_success[1]}\n"
+        #     f"Assignment Score: {assignment_avg_score}\n"
+        #     f"Attendance: {attendance[0] / attendance[1]}\n"
+        # )
+
+
+@bot.command(description="User Messages")
+async def messages(ctx: CTX):
+    logging.info(f"{ctx.author} initiated the message command.")
+    peep = src.Peeps.fetch(ctx.author.id)
+
+    if peep is None:
+        return await ctx.respond("You haven't even logged in 😑")
 
     await ctx.defer()
 
-    people[ctx.author.id].driver.close()
-    del people[ctx.author.id]
+    mails = peep.mail
+    step = 5
 
-    await ctx.respond("Logged out Successfully ✅")
+    def create_embed(page_no):
+        embed = discord.Embed(title="# School Mail List\n")
+        embed.add_field(name="", value="\u200B", inline=False)
+        embed.set_footer(text=f"@{peep.name}")
+
+        for email in mails[page_no * step : (page_no + 1) * step]:
+            embed.add_field(
+                name=email["subject"],
+                value=email["date"].strftime("%Y-%m-%d %H:%M"),
+                inline=False,
+            )
+
+        embed.add_field(name="", value="\u200B", inline=False)
+        return embed
+
+    embed_pages = [create_embed(i) for i in range((len(mails) // step))]
+
+    page_buttons = [
+        pages.PaginatorButton("first", emoji="⏪", style=discord.ButtonStyle.green),
+        pages.PaginatorButton("prev", emoji="⬅", style=discord.ButtonStyle.green),
+        pages.PaginatorButton(
+            "page_indicator", style=discord.ButtonStyle.gray, disabled=True
+        ),
+        pages.PaginatorButton("next", emoji="➡", style=discord.ButtonStyle.green),
+        pages.PaginatorButton("last", emoji="⏩", style=discord.ButtonStyle.green),
+    ]
+
+    paginator = pages.Paginator(
+        pages=embed_pages,  # type: ignore
+        show_disabled=True,
+        show_indicator=True,
+        use_default_buttons=False,
+        custom_buttons=page_buttons,
+        loop_pages=True,
+    )
+
+    await paginator.respond(ctx.interaction, ephemeral=True)
 
 
 @bot.command(description="Sends the bot's latency.")
 async def ping(
     ctx: CTX,
 ):
+    logging.info(f"{ctx.author} initiated the ping command.")
     await ctx.respond(f"Namaste! Latency is {bot.latency}")
 
 
